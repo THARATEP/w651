@@ -19,7 +19,7 @@ var APP = {
     LOG: 'Log'
   },
   PROJECT_COLS: ['id', 'name', 'workType', 'projectNo', 'agency', 'budget', 'offer', 'contractor',
-    'contractNo', 'contractDate', 'awardDate', 'markupPct', 'method', 'pctMode', 'adjRound', 'residualId',
+    'contractNo', 'contractDate', 'awardDate', 'markupPct', 'method', 'sumMode', 'announcedMid', 'pctMode', 'adjRound', 'residualId',
     'sections', 'caseInfo', 'status', 'note', 'midPrice', 'contractPrice', 'pct',
     'createdBy', 'createdAt', 'updatedBy', 'updatedAt'],
   ITEM_COLS: ['projectId', 'seq', 'id', 'section', 'type', 'no', 'name', 'unit', 'qty', 'cost', 'unitCost'],

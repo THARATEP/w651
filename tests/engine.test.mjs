@@ -77,7 +77,7 @@ test('ตัวอย่างที่ 4 งานชลประทาน — 
 
 test('ไม่ปรับลดค่าใช้จ่ายพิเศษ และวงเงินรวมเท่าราคาเสนอเสมอ', () => {
   for (const offer of [20000000, 23456789.01, 25181816]) {
-    for (const method of ['w651', 'std']) {
+    for (const method of ['w651', 'unit', 'spread']) {
       const r = E.compute({ offer, method }, bSec, bItems);
       assert.equal(r.sumAdj, offer);
       assert.ok(r.checks.slice(0, 3).every((x) => x.ok));
@@ -93,10 +93,10 @@ test('จำนวนเงินเป็นตัวอักษรไทย',
   assert.equal(E.bahtText(21000000), 'ยี่สิบเอ็ดล้านบาทถ้วน');
 });
 
-test('วิธีมาตรฐาน: รายการเหมือนกันได้ราคาเท่ากัน ผลบวกตรง และจำนวน × ราคาต่อหน่วย = ราคา', () => {
+test('วิธีกระจายเศษ: รายการเหมือนกันได้ราคาเท่ากัน ผลบวกตรง และจำนวน × ราคาต่อหน่วย = ราคา', () => {
   const items = [1, 2, 3, 4, 5].map((i) => I('1', 10, 1000.01, 'r' + i));
-  const r = E.compute({ offer: 6000 }, [{ code: '1', kind: 'construction', factor: 1.2592 }], items);
-  assert.equal(r.method, 'std');
+  const r = E.compute({ offer: 6000, method: 'spread' }, [{ code: '1', kind: 'construction', factor: 1.2592 }], items);
+  assert.equal(r.method, 'spread');
   assert.equal(r.total, r.rows.reduce((a, x) => a + Math.round(x.mid * 100), 0) / 100);
   assert.equal(r.sumAdj, 6000);
   const units = new Set(r.rows.map((x) => x.unitAdj));
@@ -105,7 +105,7 @@ test('วิธีมาตรฐาน: รายการเหมือนก
   r.rows.forEach((x) => assert.equal(Math.round(x.unitAdj * x.qty * 100) / 100, x.adj));
 });
 
-test('วิธีมาตรฐาน: ทดสอบสุ่ม 2,000 ชุด วงเงินรวมเท่าราคาเสนอและผลบวกราคากลางตรงทุกชุด', () => {
+test('วิธีกระจายเศษ: ทดสอบสุ่ม 2,000 ชุด วงเงินรวมเท่าราคาเสนอและผลบวกราคากลางตรงทุกชุด', () => {
   let seed = 7; const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
   const secs = [{ code: '1', kind: 'construction', factor: 1.2592 }, { code: '2', kind: 'equipment', factor: 1.07 }, { code: '3', kind: 'special', factor: 1 }];
   for (let t = 0; t < 2000; t++) {
@@ -116,7 +116,7 @@ test('วิธีมาตรฐาน: ทดสอบสุ่ม 2,000 ช�
     if (rnd() < 0.5) items.push(I('3', 1, 50000, 's'));
     const r0 = E.compute({ offer: 0 }, secs, items);
     const offer = Math.round(r0.total * (0.8 + rnd() * 0.19) * 100) / 100;
-    const r = E.compute({ offer, markupPct: rnd() < 0.2 ? 5 : 0 }, secs, items);
+    const r = E.compute({ offer, markupPct: rnd() < 0.2 ? 5 : 0, method: 'spread' }, secs, items);
     assert.equal(r.sumAdj, offer);
     assert.ok(r.checks[3].ok, 'ผลบวกราคากลาง');
     assert.ok(r.unitMismatch.length <= 1);
@@ -124,4 +124,22 @@ test('วิธีมาตรฐาน: ทดสอบสุ่ม 2,000 ช�
     const lim = Number.isInteger(items[0].qty) ? 0.0101 : 0.0501;
     assert.ok(Math.max(...dup) - Math.min(...dup) <= lim || r.unitMismatch.length === 1, 'รายการเหมือนกันต่างกันไม่เกิน 1 สตางค์ต่อหน่วย (จำนวนทศนิยมไม่เกิน 5 สตางค์)');
   }
+});
+
+test('วิธีหลัก (unit) ตามหลักหนังสือ: ร้อยละตามแบบสรุป, ส่วนต่างเข้ารายการเดียว, รายการเหมือนกันเท่ากัน', () => {
+  const r = E.compute({ offer: 24800000 }, bSec, bItems);
+  assert.equal(r.method, 'unit');
+  assert.equal(r.pct, 1.57);
+  assert.equal(r.sumAdj, 24800000);
+  assert.ok(r.targets.length <= 1, 'ส่วนต่างอยู่ในรายการเดียว');
+  assert.equal(r.target.id, 'b0', 'ส่วนต่างเข้ารายการราคาสูงสุดเหมือนตัวอย่าง');
+  r.rows.filter((x) => x.kind !== 'special' && x !== r.target).forEach((x) => {
+    assert.equal(Math.round(x.unitAdj * x.qty * 100) / 100, x.adj);
+    assert.equal(x.unitAdj, Math.floor(x.base / x.qty * 0.9843 * 100 + 1e-6) / 100, 'ราคาต่อหน่วย = ราคากลางต่อหน่วย × (1 − 1.57%)');
+  });
+  const items = [...[1, 2, 3, 4, 5].map((i) => I('1', 10, 1000.01, 'r' + i)), I('1', 1, 5000, 'lump')];
+  const r2 = E.compute({ offer: 12000 }, [{ code: '1', kind: 'construction', factor: 1.2592 }], items);
+  assert.equal(r2.sumAdj, 12000);
+  assert.equal(new Set(r2.rows.filter((x) => x.id.startsWith('r')).map((x) => x.adj)).size, 1, 'รายการเหมือนกันได้ราคาเท่ากัน');
+  assert.equal(r2.target.id, 'lump');
 });

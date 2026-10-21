@@ -256,7 +256,7 @@ function newProject() {
   guardDirty().then(function (ok) {
     if (!ok) return;
     S.cur = { project: { id: '', name: '', workType: 'อาคาร', projectNo: '', agency: S.settings.orgName || '', budget: '', offer: '', contractor: '', contractNo: '', contractDate: '', awardDate: '',
-      markupPct: 0, method: 'std', pctMode: 'trunc', adjRound: 'trunc', residualId: '', sections: defaultSections(), caseInfo: {}, status: 'ร่าง', note: '' }, items: [] };
+      markupPct: 0, method: 'unit', sumMode: 'line', announcedMid: '', pctMode: 'trunc', adjRound: 'trunc', residualId: '', sections: defaultSections(), caseInfo: {}, status: 'ร่าง', note: '' }, items: [] };
     S.dirty = false; openEditor();
   });
 }
@@ -473,7 +473,7 @@ function doPaste() {
 function compute() {
   var p = S.cur.project;
   var secs = p.sections.map(function (s) { return Object.assign({}, s, { factor: num(s.factor) || 1 }); });
-  S.res = E.compute({ offer: num(p.offer) || 0, markupPct: num(p.markupPct) || 0, method: p.method || 'std', pctMode: p.pctMode || 'trunc', adjRound: p.adjRound || 'trunc', residualId: p.residualId || '' }, secs, S.cur.items);
+  S.res = E.compute({ offer: num(p.offer) || 0, markupPct: num(p.markupPct) || 0, method: p.method === 'std' || !p.method ? 'unit' : p.method, sumMode: p.sumMode || 'line', pctMode: p.pctMode || 'trunc', adjRound: p.adjRound || 'trunc', residualId: p.residualId || '' }, secs, S.cur.items);
   return S.res;
 }
 var _lt; function refreshLiveDebounced() { clearTimeout(_lt); _lt = setTimeout(refreshLive, 250); }
@@ -547,7 +547,7 @@ function renderCalc() {
     kpiBox('ราคากลาง' + (mk ? ' (บวกเพิ่ม ' + mk + '%)' : ''), F(r.total), 'bi-cash-stack') +
     kpiBox('ราคาตามคำเสนอ', F(r.offer), 'bi-hand-index') +
     kpiBox('ผลต่าง (3)', F(r.P3), 'bi-arrow-down-up') +
-    '<div class="kpi accent"><i class="bi bi-percent ico"></i><div class="lbl">อัตราร้อยละที่ปรับลด</div><div class="val" style="font-size:1.9rem">' + (r.P1 ? F(r.pct) : '-') + '</div><div class="sub">ตัวคูณ = ' + (r.factor ? r.factor.toFixed(r.method === 'std' || p.pctMode === 'exact' ? 8 : 4) : '-') + '</div></div></div>';
+    '<div class="kpi accent"><i class="bi bi-percent ico"></i><div class="lbl">อัตราร้อยละที่ปรับลด</div><div class="val" style="font-size:1.9rem">' + (r.P1 ? F(r.pct) : '-') + '</div><div class="sub">ตัวคูณ = ' + (r.factor ? r.factor.toFixed(r.method === 'spread' || p.pctMode === 'exact' ? 8 : 4) : '-') + '</div></div></div>';
 
   // Formula boxes
   html += '<div class="row g-3 mb-3">' +
@@ -558,30 +558,38 @@ function renderCalc() {
     '<div class="col-lg-4"><div class="formula-box"><h6>ผลต่างระหว่างราคากลางกับราคาตามคำเสนอฯ</h6>' +
     fl('ราคากลางหักค่าใช้จ่ายพิเศษฯ <span class="tag">(1)</span>', r.P1) + fl('<u>หัก</u> ราคาที่เสนอฯ หักค่าใช้จ่ายพิเศษฯ <span class="tag">(2)</span>', r.P2) +
     fl('ผลต่าง <span class="tag">(3)</span>', r.P3, 'total') +
-    '<div class="small text-muted mt-2">(3) ÷ (1) × 100 = ' + (r.P1 ? r.rawPct.toFixed(6) : '-') + (r.method === 'std' ? ' → แสดง <b>' : ' → ใช้ <b>') + F(r.pct) + '</b>' + (r.method === 'std' ? ' (คำนวณด้วยสัดส่วนจริง (2) ÷ (1))' : '') + '</div></div></div></div>';
+    '<div class="small text-muted mt-2">(3) ÷ (1) × 100 = ' + (r.P1 ? r.rawPct.toFixed(6) : '-') + (r.method === 'spread' ? ' → แสดง <b>' : ' → ใช้ <b>') + F(r.pct) + '</b>' + (r.method === 'spread' ? ' (คำนวณด้วยสัดส่วนจริง (2) ÷ (1))' : '') + '</div></div></div></div>';
 
   // Options + residual + checks
-  var isStd = r.method === 'std', nT = r.targets.length;
+  var isStd = r.method === 'spread', nT = r.targets.length;
+  var tgtSelect = '<div class="col-12"><label class="form-label">นำส่วนต่าง <b class="text-danger">' + F(r.residual) + '</b> บาท ไปปรับ "ในรายการใดรายการหนึ่ง" (หมายเหตุ (*) ยกเว้นค่าใช้จ่ายพิเศษตามข้อกำหนด)</label>' +
+    '<select class="form-select form-select-sm" id="optTarget"><option value="">อัตโนมัติ — รายการราคากลางสูงสุดที่ไม่มีรายการซ้ำ' + (r.target && !p.residualId ? ' (' + esc(r.target.name) + ')' : '') + '</option>' +
+    itemsAdj.map(function (x) { return '<option value="' + esc(x.id) + '"' + (String(p.residualId) === String(x.id) ? ' selected' : '') + '>' + esc((x.no && x.no !== '-' ? x.no + ' ' : '') + x.name) + ' — ' + F(x.base) + '</option>'; }).join('') + '</select>' +
+    (r.target && Math.abs(r.residual) >= 0.005 ? '<div class="text-muted mt-1">ส่วนต่างคิดเป็น ' + F(Math.abs(r.residual) / r.target.base * 100, 4) + '% ของราคากลางรายการ "' + esc(r.target.name) + '"' +
+      (r.unitMismatch.length ? ' — ราคาต่อหน่วยของรายการนี้คิดจาก ราคา ÷ จำนวน' : '') + '</div>' : '') + '</div>';
+  var sumSelect = '<div class="col-md-6"><label class="form-label">ราคากลางรวม</label><select class="form-select form-select-sm" id="optSum">' +
+    opt('line', 'ผลบวกราคากลางที่แสดงในแต่ละบรรทัด', p.sumMode || 'line') + opt('full', 'ทศนิยมเต็มแบบ Excel (ตามตัวอย่าง ว 651)', p.sumMode || 'line') + '</select></div>';
   html += '<div class="row g-3 mb-3"><div class="col-lg-7"><div class="formula-box"><h6><i class="bi bi-sliders"></i> วิธีคำนวณและการปัดเศษ</h6>' +
     '<div class="row g-2 small">' +
     '<div class="col-12"><label class="form-label">วิธีคำนวณราคาที่ปรับลด</label><select class="form-select form-select-sm" id="optMethod">' +
-    opt('std', 'มาตรฐาน (แนะนำ) — ลดทุกรายการสัดส่วนเดียวกัน ผลบวกตรง จำนวน × ราคาต่อหน่วย = ราคา', r.method) +
-    opt('w651', 'ตามตัวอย่างในหนังสือ ว 651 — ร้อยละตัด 2 ตำแหน่ง ส่วนต่างรวมเข้ารายการเดียว', r.method) + '</select></div>' +
-    (isStd
-      ? '<div class="col-12"><div class="alert alert-success py-2 mb-0">ราคาต่อหน่วย = ราคากลางต่อหน่วย × ' + (r.factor ? r.factor.toFixed(8) : '-') + ' (สัดส่วน (2) ÷ (1)) ปัดลงเป็นสตางค์ ' +
-        'แล้วแจกเศษ <b>' + F(r.residual) + '</b> บาท ทีละ 1 สตางค์ต่อหน่วย ตามรายการที่มีเศษเหลือมากสุด' + (nT ? ' (' + nT + ' รายการ)' : '') +
-        ' — รายการที่กรอกเหมือนกันจะได้ราคาเท่ากัน' + (r.unitMismatch.length ? '<br><span class="text-danger">มีเศษ ' + F(r.unitMismatch[0].residual) + ' บาท ที่หารไม่ลงตัว ใส่ไว้ที่ "' + esc(r.unitMismatch[0].name) + '"</span>' : '') + '</div></div>'
-      : '<div class="col-md-6"><label class="form-label">อัตราร้อยละ</label><select class="form-select form-select-sm" id="optPct">' +
-        opt('trunc', 'ทศนิยม 2 ตำแหน่ง ตัดเศษทิ้ง (ตามตัวอย่าง ว 651)', p.pctMode) + opt('round', 'ทศนิยม 2 ตำแหน่ง ปัดเศษ', p.pctMode) + opt('exact', 'ใช้อัตราจริง ไม่ปัดเศษ', p.pctMode) + '</select></div>' +
-        '<div class="col-md-6"><label class="form-label">ราคาที่ปรับลดแต่ละรายการ (สตางค์)</label><select class="form-select form-select-sm" id="optAdj">' +
-        opt('trunc', 'ตัดเศษสตางค์ทิ้ง (ตามตัวอย่าง ว 651)', p.adjRound) + opt('round', 'ปัดเศษสตางค์', p.adjRound) + '</select></div>' +
-        '<div class="col-12"><label class="form-label">นำส่วนต่าง <b class="text-danger">' + F(r.residual) + '</b> บาท ไปปรับในรายการ (ตามหมายเหตุ (*) ยกเว้นรายการค่าใช้จ่ายพิเศษตามข้อกำหนด)</label>' +
-        '<select class="form-select form-select-sm" id="optTarget"><option value="">อัตโนมัติ — รายการที่มีราคากลางสูงสุด (ตามตัวอย่าง ว 651)</option>' +
-        itemsAdj.map(function (x) { return '<option value="' + esc(x.id) + '"' + (String(p.residualId) === String(x.id) ? ' selected' : '') + '>' + esc((x.no && x.no !== '-' ? x.no + ' ' : '') + x.name) + ' — ' + F(x.base) + '</option>'; }).join('') + '</select></div>' +
-        '<div class="col-12 text-warning-emphasis">วิธีนี้ให้ตัวเลขตรงกับตัวอย่างในหนังสือ แต่รายการที่กรอกเหมือนกันอาจได้ราคาต่างกัน และจำนวน × ราคาต่อหน่วยอาจไม่เท่ากับราคา</div>') +
+    opt('unit', 'ตามหลักหนังสือ ว 651 — คิดที่ราคาต่อหน่วย (แนะนำ)', r.method) +
+    opt('w651', 'ตามตัวอย่างในสิ่งที่ส่งมาด้วยทุกประการ — คิดที่ราคารวมรายการ', r.method) +
+    opt('spread', 'ทางเลือก — สัดส่วนจริงและกระจายเศษหลายรายการ (ไม่ตรงหมายเหตุ (*))', r.method) + '</select></div>' +
+    (r.method === 'unit' ? '<div class="col-12"><div class="alert alert-success py-2 mb-0">ราคาต่อหน่วย = ราคากลางต่อหน่วย × (1 − ' + F(r.pct) + '%) ตัดเศษสตางค์ แล้ว ราคา = จำนวน × ราคาต่อหน่วย ' +
+        '— ใช้อัตราร้อยละเดียวกับแบบสรุปราคากลาง และส่วนต่างเข้ารายการเดียวตามหมายเหตุ (*) รายการที่กรอกเหมือนกันจึงได้ราคาเท่ากัน</div></div>' : '') +
+    (r.method === 'w651' ? '<div class="col-12"><div class="alert alert-light border py-2 mb-0">ราคา = ราคากลางรายการ × (1 − ' + F(r.pct) + '%) ตัดเศษสตางค์, ราคาต่อหน่วย = ราคา ÷ จำนวน — ตรงกับตัวอย่างทุกบาททุกสตางค์ ' +
+        'แต่ จำนวน × ราคาต่อหน่วย อาจไม่เท่ากับราคา (ตัวอย่างในหนังสือก็เป็นเช่นนี้)</div></div>' : '') +
+    (isStd ? '<div class="col-12"><div class="alert alert-warning py-2 mb-0">ลดด้วยสัดส่วนจริง ' + (r.factor ? r.factor.toFixed(8) : '-') + ' และแจกเศษ ' + F(r.residual) + ' บาท ให้ ' + nT + ' รายการ — ' +
+        'หมายเหตุ (*) ของตัวอย่างให้ปรับส่วนต่าง "ในรายการใดรายการหนึ่ง" วิธีนี้จึงควรใช้เมื่อหน่วยงานพิจารณาแล้วเห็นว่าเหมาะสมเท่านั้น</div></div>' : '') +
+    (isStd ? '' : '<div class="col-md-6"><label class="form-label">อัตราร้อยละ</label><select class="form-select form-select-sm" id="optPct">' +
+        opt('trunc', 'ทศนิยม 2 ตำแหน่ง ตัดเศษทิ้ง (ตามตัวอย่าง)', p.pctMode) + opt('round', 'ทศนิยม 2 ตำแหน่ง ปัดเศษ', p.pctMode) + opt('exact', 'อัตราจริง ไม่ปัดเศษ', p.pctMode) + '</select></div>' +
+        '<div class="col-md-6"><label class="form-label">' + (r.method === 'unit' ? 'ราคาต่อหน่วย' : 'ราคาที่ปรับลด') + ' (สตางค์)</label><select class="form-select form-select-sm" id="optAdj">' +
+        opt('trunc', 'ตัดเศษสตางค์ทิ้ง (ตามตัวอย่าง)', p.adjRound) + opt('round', 'ปัดเศษสตางค์', p.adjRound) + '</select></div>') +
+    (r.method === 'w651' ? '' : sumSelect) +
+    (isStd ? '' : tgtSelect) +
     '</div></div></div>' +
     '<div class="col-lg-5"><div class="formula-box"><h6><i class="bi bi-shield-check"></i> ตรวจสอบความถูกต้อง</h6>' +
-    r.checks.map(function (c) { return '<div class="check-item"><i class="bi ' + (c.ok ? 'bi-check-circle-fill text-success' : 'bi-x-circle-fill text-danger') + '"></i><span>' + c.msg + '</span></div>'; }).join('') +
+    (num(p.announcedMid) ? [{ ok: Math.abs(num(p.announcedMid) - r.total) < 0.005, msg: 'ราคากลางที่คำนวณ ' + F(r.total) + (Math.abs(num(p.announcedMid) - r.total) < 0.005 ? ' = ' : ' ≠ ') + 'ราคากลางที่ประกาศ ' + F(num(p.announcedMid)) + (Math.abs(num(p.announcedMid) - r.total) < 0.005 ? '' : ' — ตรวจรายการ BOQ หรือเปลี่ยน "ราคากลางรวม" เป็นแบบทศนิยมเต็ม') }] : []).concat(r.checks).map(function (c) { return '<div class="check-item"><i class="bi ' + (c.ok ? 'bi-check-circle-fill text-success' : 'bi-x-circle-fill text-danger') + '"></i><span>' + c.msg + '</span></div>'; }).join('') +
     (isStd ? '' : '<div class="check-item"><i class="bi ' + (r.target ? 'bi-check-circle-fill text-success' : 'bi-dash-circle text-muted') + '"></i><span>ส่วนต่าง ' + F(r.residual) + ' บาท ปรับในรายการ: ' + (r.target ? esc(r.target.name) : '-') + '</span></div>') +
     (p.budget && r.sumAdj > num(p.budget) ? '<div class="check-item"><i class="bi bi-x-circle-fill text-danger"></i><span>วงเงินตามสัญญาสูงกว่าวงเงินงบประมาณ</span></div>' : '') +
     '</div></div></div>';
@@ -602,6 +610,7 @@ function renderCalc() {
 
   $('#calcBody').innerHTML = html;
   $('#optMethod').addEventListener('change', function () { p.method = this.value; markDirty(); renderCalc(); });
+  if ($('#optSum')) $('#optSum').addEventListener('change', function () { p.sumMode = this.value; markDirty(); renderCalc(); });
   if (!isStd) {
     $('#optPct').addEventListener('change', function () { p.pctMode = this.value; markDirty(); renderCalc(); });
     $('#optAdj').addEventListener('change', function () { p.adjRound = this.value; markDirty(); renderCalc(); });
@@ -689,8 +698,9 @@ function reportSummary(p, r, st) {
     }).join('') +
     '<tr><td colspan="' + (mk ? 6 : 6) + '" class="n" style="border:none;border-right:1px solid #333"><b>วงเงินรวม</b></td><td class="n"><b>' + F(r.totalMid) + '</b></td>' + (mk ? '<td class="n"><b>' + F(r.total) + '</b></td>' : '') + '<td class="n shade"><b>' + F(r.sumAdj) + '</b></td><td style="border:none">(*)</td></tr></tbody></table>';
   h += '<div class="note"><u>หมายเหตุ</u> (*) ส่วนต่างนี้ให้ปรับเพิ่มลด ในรายการใดรายการหนึ่งได้ตามความเหมาะสม ยกเว้น รายการค่าใช้จ่ายพิเศษตามข้อกำหนด ทั้งนี้ วงเงินรวมของการปรับลดราคาจะต้องเท่ากับราคาตามคำเสนอของผู้ชนะการจัดซื้อจัดจ้าง' +
-    (r.method === 'std' ? '<br>ราคาที่ปรับลดทุกรายการคำนวณด้วยสัดส่วนเดียวกัน (2) ÷ (1) = ' + r.factor.toFixed(8) + ' ราคาต่อหน่วยเป็นสตางค์เต็ม และจำนวน × ราคาต่อหน่วย = ราคา' + (r.unitMismatch.length ? ' ยกเว้นรายการ "' + esc(r.unitMismatch[0].name) + '"' : '')
-      : (r.target ? '<br>ส่วนต่างจากการปัดเศษ ' + F(r.residual) + ' บาท ปรับในรายการ "' + esc(r.target.name) + '"' : '')) + '</div>';
+    (r.method === 'spread' ? '<br>ราคาที่ปรับลดทุกรายการคำนวณด้วยสัดส่วน (2) ÷ (1) = ' + r.factor.toFixed(8) + ' และแจกเศษสตางค์ ' + r.targets.length + ' รายการ'
+      : (r.method === 'unit' ? '<br>ราคาต่อหน่วย = ราคากลางต่อหน่วย × (1 − ' + F(r.pct) + '%) และ ราคา = จำนวน × ราคาต่อหน่วย' + (r.unitMismatch.length ? ' (ยกเว้นรายการที่รับส่วนต่าง)' : '') : '') +
+        (r.target ? '<br>ส่วนต่าง ' + F(r.residual) + ' บาท ปรับในรายการ "' + esc(r.target.name) + '"' : '')) + '</div>';
   h += signHtml([[st.officerName, st.officerPosition, 'ผู้ปรับลดราคา'], [st.checkerName, st.checkerPosition, 'ผู้ตรวจสอบ']]);
   return h + '</div>';
 }

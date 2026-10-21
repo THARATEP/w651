@@ -15,11 +15,15 @@ var BoqEngine = (function () {
   function compute(p, sections, items) {
     var secMap = {}; sections.forEach(function (s) { secMap[s.code] = s; });
     var mk = Number(p.markupPct) || 0;
-    // method: 'std' (ค่าเริ่มต้น) = สัดส่วนเท่ากันทุกรายการ ราคาต่อหน่วยลงตัว ผลบวกตรง
-    //         'w651' = ตามตัวอย่างในหนังสือ ว 651 (ร้อยละตัด 2 ตำแหน่ง ทศนิยมเต็ม ส่วนต่างเข้ารายการเดียว)
-    var method = p.method === 'w651' || p.sumMode === 'w651' || p.rawBase === true ? 'w651' : 'std';
+    // method (ทุกวิธีใช้หลักตามหนังสือ ว 651: ปรับทุกรายการเทียบราคากลาง ไม่ปรับค่าใช้จ่ายพิเศษ วงเงินรวม = ราคาเสนอ)
+    //  'unit'   (ค่าเริ่มต้น) ร้อยละตามแบบสรุปราคากลาง (ตัด 2 ตำแหน่ง) คูณราคาต่อหน่วย, ส่วนต่าง (*) เข้ารายการเดียว,
+    //           ราคากลางรวม = ผลบวกบรรทัด, จำนวน × ราคาต่อหน่วย = ราคา (ยกเว้นรายการที่รับส่วนต่างหากหารไม่ลงตัว)
+    //  'w651'   ตามตัวอย่างในสิ่งที่ส่งมาด้วยทุกประการ (ทศนิยมเต็มแบบ Excel, คูณที่ราคารวมรายการ, ราคาต่อหน่วย = ราคา ÷ จำนวน)
+    //  'spread' ทางเลือก: สัดส่วนจริง (2)÷(1) กระจายเศษสตางค์หลายรายการ (ไม่ตรงหมายเหตุ (*) "ในรายการใดรายการหนึ่ง")
+    var method = p.method === 'w651' || p.sumMode === 'w651' || p.rawBase === true ? 'w651' : p.method === 'spread' ? 'spread' : 'unit';
     var w651 = method === 'w651';
-    var unitMode = !w651;
+    var unitMode = method !== 'w651';
+    var fullSum = w651 || p.sumMode === 'full'; // ราคากลางรวมแบบทศนิยมเต็ม (Excel) ตามตัวอย่าง ว 651
     var rnd = p.adjRound === 'round' ? r2 : t2;
     var rows = items.map(function (it) {
       var r = Object.assign({}, it);
@@ -31,31 +35,54 @@ var BoqEngine = (function () {
       if (w651) { r.baseRaw = mk ? r.midRaw * (1 + mk / 100) : r.midRaw; r.midPlus = r2(r.baseRaw); }
       else { r.midPlus = mk ? r2(r.mid * (1 + mk / 100)) : r.mid; r.baseRaw = r.midPlus; }
       r.base = r.midPlus;
+      r.midFull = r.midRaw; r.baseFull = mk ? r.midRaw * (1 + mk / 100) : r.midRaw;
       r.residual = 0;
       return r;
     });
     var its = rows.filter(function (r) { return r.type === 'ITEM'; });
     var S = function (arr, f) { return arr.reduce(function (a, r) { return a + toS(r[f]); }, 0) / 100; };
-    var SR = function (arr, f, fr) { return w651 ? r2(arr.reduce(function (a, r) { return a + r[fr]; }, 0)) : S(arr, f); };
-    var total = SR(its, 'base', 'baseRaw'), totalMid = SR(its, 'mid', 'midRaw'), totalCost = S(its, 'cost');
+    var SR = function (arr, f, fr) { return fullSum ? r2(arr.reduce(function (a, r) { return a + r[fr]; }, 0)) : S(arr, f); };
+    var total = SR(its, 'base', 'baseFull'), totalMid = SR(its, 'mid', 'midFull'), totalCost = S(its, 'cost');
     var spec = its.filter(function (r) { return r.kind === 'special'; });
     var adjItems = its.filter(function (r) { return r.kind !== 'special'; });
-    var special = SR(spec, 'base', 'baseRaw');
+    var special = SR(spec, 'base', 'baseFull');
     var offer = Number(p.offer) || 0;
     var P1 = r2(total - special), P2 = r2(offer - special), P3 = r2(P1 - P2);
     var rawPct = P1 ? P3 / P1 * 100 : 0;
     var pct = p.pctMode === 'round' ? r2(rawPct) : p.pctMode === 'exact' ? rawPct : t2(rawPct);
-    var factor = w651 ? 1 - pct / 100 : (P1 ? P2 / P1 : 1);
+    var factor = method === 'spread' ? (P1 ? P2 / P1 : 1) : 1 - pct / 100;
     spec.forEach(function (r) { r.adj = r.base; r.unitAdj = r.qty ? r2(r.adj / r.qty) : r.adj; });
     var targets = [], unitMismatch = [], residual = 0;
     function take(r, delta) { if (!delta) return; r.residual = r2(r.residual + delta); if (targets.indexOf(r) < 0) targets.push(r); }
-    if (w651) {
-      adjItems.forEach(function (r) { r.adj = rnd(r.baseRaw * factor); r.unitAdj = r.qty ? rnd(r.adj / r.qty) : r.adj; });
+    // เลือกรายการรับส่วนต่าง (*) "ในรายการใดรายการหนึ่งได้ตามความเหมาะสม": ผู้ใช้เลือกเอง หรือระบบเลือกรายการราคาสูงสุด
+    // ที่ไม่มีรายการเหมือนกัน (เพื่อให้รายการที่กรอกเหมือนกันได้ราคาเท่ากัน)
+    function pickTarget(R) {
+      if (p.residualId) { var sel = adjItems.filter(function (r) { return String(r.id) === String(p.residualId); })[0]; if (sel) return sel; }
+      var kc = {}; adjItems.forEach(function (r) { var k = r.base + '|' + r.qty; kc[k] = (kc[k] || 0) + 1; });
+      var uniq = adjItems.filter(function (r) { return kc[r.base + '|' + r.qty] === 1; });
+      var pool = (uniq.length ? uniq : adjItems).slice().sort(function (x, y) { return y.base - x.base; });
+      if (method === 'unit' && R) { // ถ้ามีรายการที่ราคามากพอและหารส่วนต่างลงตัวกับจำนวน เลือกรายการนั้น (ราคาต่อหน่วยลงตัวทุกรายการ)
+        var RS = Math.round(R * 100);
+        var fit = pool.filter(function (r) { if (!(r.qty > 0) || r.base < 1000 * Math.abs(R)) return false; var du = RS / r.qty; return Math.abs(du - Math.round(du)) < 1e-9; })[0];
+        if (fit) return fit;
+      }
+      return pool[0] || null;
+    }
+    if (method !== 'spread') {
+      adjItems.forEach(function (r) {
+        if (method === 'unit' && r.qty > 0) { r.unitAdj = rnd(r.baseRaw / r.qty * factor); r.adj = r2(r.unitAdj * r.qty); }
+        else { r.adj = rnd(r.baseRaw * factor); r.unitAdj = r.qty ? rnd(r.adj / r.qty) : r.adj; }
+      });
       residual = r2(P2 - S(adjItems, 'adj'));
-      var t0 = null;
-      if (p.residualId) t0 = adjItems.filter(function (r) { return String(r.id) === String(p.residualId); })[0];
-      if (!t0) adjItems.forEach(function (r) { if (!t0 || r.base > t0.base) t0 = r; });
-      if (t0 && Math.abs(residual) >= 0.005) { t0.adj = r2(t0.adj + residual); take(t0, residual); t0.unitAdj = t0.qty ? rnd(t0.adj / t0.qty) : t0.adj; }
+      var t0 = pickTarget(residual);
+      if (t0 && Math.abs(residual) >= 0.005) {
+        t0.adj = r2(t0.adj + residual); take(t0, residual);
+        if (method === 'unit' && t0.qty > 0) {
+          var du = Math.round(residual * 100) / t0.qty;
+          if (Math.abs(du - Math.round(du)) < 1e-9 && r2(r2(t0.unitAdj + Math.round(du) / 100) * t0.qty) === t0.adj) t0.unitAdj = r2(t0.unitAdj + Math.round(du) / 100);
+          else { t0.unitAdj = rnd(t0.adj / t0.qty); unitMismatch.push(t0); }
+        } else t0.unitAdj = t0.qty ? rnd(t0.adj / t0.qty) : t0.adj;
+      }
     } else {
       // ลดทุกรายการด้วยสัดส่วนเดียวกัน (2) ÷ (1) แล้วกำหนดราคาต่อหน่วยเป็นสตางค์เต็ม
       // เศษสตางค์ที่เหลือแจกตามวิธีเศษเหลือมากสุด (largest remainder) รายการเหมือนกันจึงได้ราคาเท่ากัน
@@ -114,7 +141,7 @@ var BoqEngine = (function () {
     var secTotals = {};
     sections.forEach(function (s) { secTotals[s.code] = { cost: 0, mid: 0, midPlus: 0, adj: 0 }; });
     var cur = null;
-    var RK = { cost: 'cost', mid: w651 ? 'midRaw' : 'mid', midPlus: w651 ? 'baseRaw' : 'midPlus', adj: 'adj' };
+    var RK = { cost: 'cost', mid: fullSum ? 'midFull' : 'mid', midPlus: fullSum ? 'baseFull' : 'midPlus', adj: 'adj' };
     rows.forEach(function (r) {
       if (r.type === 'H1') { cur = r; r.sub = { cost: 0, mid: 0, midPlus: 0, adj: 0 }; return; }
       if (cur && cur.section !== r.section) cur = null;
@@ -132,12 +159,12 @@ var BoqEngine = (function () {
     checks.push({ ok: spec.every(function (r) { return r.adj === r.base; }), msg: 'ไม่นำค่าใช้จ่ายพิเศษตามข้อกำหนดมาปรับลด' });
     checks.push({ ok: its.every(function (r) { return r.adj >= 0; }), msg: 'ไม่มีรายการติดลบ' });
     var lineSum = S(its, 'base');
-    checks.push({ ok: Math.abs(lineSum - total) < 0.005, msg: 'ผลบวกราคากลางทุกรายการ = ราคากลางรวม (' + fmt(lineSum) + (Math.abs(lineSum - total) < 0.005 ? '' : ' ≠ ' + fmt(total) + ' — โหมดทศนิยมเต็มตามตัวอย่าง ว 651') + ')' });
+    checks.push({ ok: Math.abs(lineSum - total) < 0.005, msg: 'ผลบวกราคากลางทุกรายการ = ราคากลางรวม (' + fmt(lineSum) + (Math.abs(lineSum - total) < 0.005 ? '' : ' ≠ ' + fmt(total) + ' — ราคากลางรวมแบบทศนิยมเต็มตามตัวอย่าง ว 651') + ')' });
     var bad = adjItems.filter(function (r) { return r.qty > 0 && Math.abs(r2(r.unitAdj * r.qty) - r.adj) >= 0.005; });
     checks.push({ ok: !bad.length, msg: bad.length ? 'จำนวน × ราคาต่อหน่วย ≠ ราคา ' + bad.length + ' รายการ' + (unitMode ? '' : ' (โหมดปรับที่ราคารวมตามตัวอย่าง ว 651)') : 'จำนวน × ราคาต่อหน่วย = ราคา ทุกรายการ' });
     return { rows: rows, total: total, totalMid: totalMid, totalCost: totalCost, special: special, offer: offer,
       P1: P1, P2: P2, P3: P3, rawPct: rawPct, pct: pct, factor: factor, residual: residual,
-      target: target, targets: targets, unitMismatch: unitMismatch, method: method,
+      target: target, targets: targets, fullSum: fullSum, unitMismatch: unitMismatch, method: method,
       secTotals: secTotals, sumAdj: sumAll, checks: checks, markupPct: mk };
   }
 
