@@ -24,7 +24,7 @@ const bItems = [
 ];
 
 test('ตัวอย่างที่ 1 งานอาคาร — ร้อยละ 1.57', () => {
-  const r = E.compute({ offer: 24800000 }, bSec, bItems);
+  const r = E.compute({ offer: 24800000, method: 'w651' }, bSec, bItems);
   assert.equal(r.total, 25181816);
   assert.equal(r.P3, 381816);
   assert.equal(r.pct, 1.57);
@@ -39,7 +39,7 @@ test('ตัวอย่างที่ 1 งานอาคาร — ร้อ
 });
 
 test('ตัวอย่างที่ 2 งานอาคาร 3 จชต. (+5%) — ร้อยละ 6.46', () => {
-  const r = E.compute({ offer: 24800000, markupPct: 5 }, bSec, bItems);
+  const r = E.compute({ offer: 24800000, markupPct: 5, method: 'w651' }, bSec, bItems);
   assert.equal(r.total, 26440906.80);
   assert.equal(r.pct, 6.46);
   const adj = Object.fromEntries(r.rows.map((x) => [x.id, x]));
@@ -55,7 +55,7 @@ test('ตัวอย่างที่ 3 งานทาง สะพาน แ
     [1, 4680], [3, 8940], [3, 8940], [120, 34800], [48, 62400], [4, 13524], [1, 14280]];
   const exp = [2428.87, 42314.16, 66415.48, 1343017.65, 5041.89, 3881.84, 54964.03, 5770.11, 11022.39, 11022.39, 42905.97, 76934.84, 16674.14, 17606.24];
   const items = [...rc.map(([q, c], i) => I('1', q, c, 'r' + i)), I('3', 1, 500000, 'sp')];
-  const r = E.compute({ offer: 2200000 }, [{ code: '1', kind: 'construction', factor: 1.3607 }, { code: '3', kind: 'special', factor: 1 }], items);
+  const r = E.compute({ offer: 2200000, method: 'w651' }, [{ code: '1', kind: 'construction', factor: 1.3607 }, { code: '3', kind: 'special', factor: 1 }], items);
   assert.equal(r.total, 2376181.32);
   assert.equal(r.pct, 9.39);
   exp.forEach((v, i) => assert.equal(r.rows[i].adj, v, `รายการที่ ${i + 1}`));
@@ -68,7 +68,7 @@ test('ตัวอย่างที่ 4 งานชลประทาน — 
   const q = [720, 252, 252, 13.72, 2486, 38.4, 6920, 12.4, 951.42, 86, 84, 240, 329, 144, 235, 482, 482];
   const exp = [2505.96, 19215.35, 38011.50, 53319.69, 111878.83, 151253.45, 311424.58, 46646.42, 42817.28, 3438.92, 66836.14, 179293.54, 413090.85, 88291.21, 541164.20, 338296.96, 92515.12];
   const items = [...c.map((x, i) => I('1', q[i], x, 'w' + i)), I('3', 1, 500000, 'sp')];
-  const r = E.compute({ offer: 3000000 }, [{ code: '1', kind: 'construction', factor: 1.3357 }, { code: '3', kind: 'special', factor: 1 }], items);
+  const r = E.compute({ offer: 3000000, method: 'w651' }, [{ code: '1', kind: 'construction', factor: 1.3357 }, { code: '3', kind: 'special', factor: 1 }], items);
   assert.equal(r.total, 3109714.96);
   assert.equal(r.pct, 4.2);
   assert.equal(r.sumAdj, 3000000);
@@ -77,9 +77,12 @@ test('ตัวอย่างที่ 4 งานชลประทาน — 
 
 test('ไม่ปรับลดค่าใช้จ่ายพิเศษ และวงเงินรวมเท่าราคาเสนอเสมอ', () => {
   for (const offer of [20000000, 23456789.01, 25181816]) {
-    const r = E.compute({ offer }, bSec, bItems);
-    assert.equal(r.sumAdj, offer);
-    assert.ok(r.checks.every((x) => x.ok));
+    for (const method of ['w651', 'std']) {
+      const r = E.compute({ offer, method }, bSec, bItems);
+      assert.equal(r.sumAdj, offer);
+      assert.ok(r.checks.slice(0, 3).every((x) => x.ok));
+      assert.ok(r.rows.filter((x) => x.kind === 'special').every((x) => x.adj === x.base));
+    }
   }
 });
 
@@ -88,4 +91,37 @@ test('จำนวนเงินเป็นตัวอักษรไทย',
   assert.equal(E.bahtText(3109714.96), 'สามล้านหนึ่งแสนเก้าพันเจ็ดร้อยสิบสี่บาทเก้าสิบหกสตางค์');
   assert.equal(E.bahtText(101), 'หนึ่งร้อยเอ็ดบาทถ้วน');
   assert.equal(E.bahtText(21000000), 'ยี่สิบเอ็ดล้านบาทถ้วน');
+});
+
+test('วิธีมาตรฐาน: รายการเหมือนกันได้ราคาเท่ากัน ผลบวกตรง และจำนวน × ราคาต่อหน่วย = ราคา', () => {
+  const items = [1, 2, 3, 4, 5].map((i) => I('1', 10, 1000.01, 'r' + i));
+  const r = E.compute({ offer: 6000 }, [{ code: '1', kind: 'construction', factor: 1.2592 }], items);
+  assert.equal(r.method, 'std');
+  assert.equal(r.total, r.rows.reduce((a, x) => a + Math.round(x.mid * 100), 0) / 100);
+  assert.equal(r.sumAdj, 6000);
+  const units = new Set(r.rows.map((x) => x.unitAdj));
+  assert.ok(units.size <= 2);
+  assert.ok(Math.max(...r.rows.map((x) => x.unitAdj)) - Math.min(...r.rows.map((x) => x.unitAdj)) <= 0.0101);
+  r.rows.forEach((x) => assert.equal(Math.round(x.unitAdj * x.qty * 100) / 100, x.adj));
+});
+
+test('วิธีมาตรฐาน: ทดสอบสุ่ม 2,000 ชุด วงเงินรวมเท่าราคาเสนอและผลบวกราคากลางตรงทุกชุด', () => {
+  let seed = 7; const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  const secs = [{ code: '1', kind: 'construction', factor: 1.2592 }, { code: '2', kind: 'equipment', factor: 1.07 }, { code: '3', kind: 'special', factor: 1 }];
+  for (let t = 0; t < 2000; t++) {
+    const items = [];
+    const n = 2 + Math.floor(rnd() * 40);
+    for (let i = 0; i < n; i++) items.push(I(rnd() < 0.85 ? '1' : '2', rnd() < 0.3 ? Math.round(rnd() * 300000) / 100 : Math.ceil(rnd() * 500), Math.round(rnd() * 5e8) / 100, 'i' + i));
+    for (let k = 0; k < 3; k++) items.push({ ...items[0], id: 'd' + k });
+    if (rnd() < 0.5) items.push(I('3', 1, 50000, 's'));
+    const r0 = E.compute({ offer: 0 }, secs, items);
+    const offer = Math.round(r0.total * (0.8 + rnd() * 0.19) * 100) / 100;
+    const r = E.compute({ offer, markupPct: rnd() < 0.2 ? 5 : 0 }, secs, items);
+    assert.equal(r.sumAdj, offer);
+    assert.ok(r.checks[3].ok, 'ผลบวกราคากลาง');
+    assert.ok(r.unitMismatch.length <= 1);
+    const dup = r.rows.filter((x) => x.id === 'i0' || String(x.id).startsWith('d')).map((x) => x.unitAdj);
+    const lim = Number.isInteger(items[0].qty) ? 0.0101 : 0.0501;
+    assert.ok(Math.max(...dup) - Math.min(...dup) <= lim || r.unitMismatch.length === 1, 'รายการเหมือนกันต่างกันไม่เกิน 1 สตางค์ต่อหน่วย (จำนวนทศนิยมไม่เกิน 5 สตางค์)');
+  }
 });
